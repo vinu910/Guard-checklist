@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Google Sheet Data Viewer</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: #f4f6f8;
+    margin: 0;
+    padding: 24px;
+    color: #222;
+  }
+  h1 {
+    font-size: 20px;
+    margin-bottom: 16px;
+  }
+  #status {
+    margin-bottom: 12px;
+    font-size: 14px;
+    color: #555;
+  }
+  .table-wrap {
+    overflow-x: auto;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 900px;
+  }
+  th, td {
+    border: 1px solid #e0e0e0;
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  th {
+    background: #2563eb;
+    color: #fff;
+    position: sticky;
+    top: 0;
+  }
+  tr:nth-child(even) {
+    background: #f9fafb;
+  }
+  tr:hover {
+    background: #eef2ff;
+  }
+  .error {
+    color: #b91c1c;
+    background: #fee2e2;
+    padding: 10px 14px;
+    border-radius: 6px;
+  }
+  .controls {
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .controls label {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .controls input[type="date"],
+  .controls input[type="text"] {
+    padding: 6px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .controls button {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 6px;
+    background: #2563eb;
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .controls button:hover {
+    background: #1d4ed8;
+  }
+  .thumb {
+    width: 40px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+    cursor: pointer;
+    display: block;
+  }
+  td.photo-cell {
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<h1>Google Sheet Data<br>Deverloper Jaipal</h1>
+
+<div class="controls">
+  <label for="dateSearch">Date Search (Column A):</label>
+  <input type="date" id="dateSearch">
+  <input type="text" id="dateSearchText" placeholder="ya date type karein (jaise sheet me hai)">
+  <button id="clearBtn">Clear</button>
+</div>
+
+<div id="status">Data load ho raha hai...</div>
+<div class="table-wrap">
+  <table id="dataTable">
+    <thead><tr id="headRow"></tr></thead>
+    <tbody id="bodyRows"></tbody>
+  </table>
+</div>
+
+<script>
+  // ===== CONFIG: apni sheet ki details yahan daalein =====
+  const SHEET_ID = "1XlPt-29fV_QN0S8WUUVY4BV3J3McotWJRCoN1Hup-6o"; // sheet ka ID (URL se)
+  const SHEET_NAME = "Sheet1";   // tab ka naam
+  const RANGE = "A:Q";           // column A se Q tak
+  // =========================================================
+
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}&range=${RANGE}`;
+
+  const statusEl = document.getElementById('status');
+  const headRow = document.getElementById('headRow');
+  const bodyRows = document.getElementById('bodyRows');
+  const dateSearch = document.getElementById('dateSearch');
+  const dateSearchText = document.getElementById('dateSearchText');
+  const clearBtn = document.getElementById('clearBtn');
+
+  // Column headers jinme photo/link hai unko chote thumbnail me dikhana hai.
+  // Yahan keywords add/edit kar sakte ho apni sheet ke column names ke hisaab se.
+  const PHOTO_KEYWORDS = ['photo', 'license', 'licence', 'rc', 'driver'];
+
+  let allRowsData = []; // [{ cells: [...], dateText: '...' }]
+
+  function isPhotoColumn(label) {
+    const l = (label || '').toLowerCase();
+    return PHOTO_KEYWORDS.some(k => l.includes(k));
+  }
+
+  function makeCellContent(value, isPhoto) {
+    const val = (value || '').toString().trim();
+    if (!val) return document.createTextNode('');
+
+    if (isPhoto && /^https?:\/\//i.test(val)) {
+      const a = document.createElement('a');
+      a.href = val;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      const img = document.createElement('img');
+      img.src = val;
+      img.className = 'thumb';
+      img.alt = 'photo';
+      img.onerror = () => {
+        // agar image load na ho to sirf chota link text dikhao
+        img.remove();
+        a.textContent = 'View';
+      };
+      a.appendChild(img);
+      return a;
+    }
+    return document.createTextNode(val);
+  }
+
+  function renderTable(rows) {
+    bodyRows.innerHTML = '';
+    rows.forEach(r => {
+      bodyRows.appendChild(r.tr);
+    });
+    statusEl.textContent = `Total ${rows.length} rows dikh rahe hain.`;
+  }
+
+  function normalizeDateStr(str) {
+    return (str || '').toString().trim().toLowerCase();
+  }
+
+  function applyFilter() {
+    let query = '';
+    if (dateSearch.value) {
+      // input type=date value format: YYYY-MM-DD -> ise DD/MM/YYYY aur D-M-YYYY jaise common formats me convert karke match try karenge
+      const [y, m, d] = dateSearch.value.split('-');
+      query = `${d}/${m}/${y}`;
+    } else if (dateSearchText.value) {
+      query = dateSearchText.value.trim();
+    }
+
+    if (!query) {
+      renderTable(allRowsData);
+      return;
+    }
+
+    const q = normalizeDateStr(query);
+    const filtered = allRowsData.filter(r => normalizeDateStr(r.dateText).includes(q));
+    renderTable(filtered);
+  }
+
+  dateSearch.addEventListener('change', applyFilter);
+  dateSearchText.addEventListener('input', applyFilter);
+  clearBtn.addEventListener('click', () => {
+    dateSearch.value = '';
+    dateSearchText.value = '';
+    renderTable(allRowsData);
+  });
+
+  fetch(url)
+    .then(res => res.text())
+    .then(text => {
+      // Google gviz response ek JS wrapper ke andar aata hai, usse strip karte hain
+      const jsonStr = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
+      const data = JSON.parse(jsonStr);
+
+      if (!data.table || !data.table.rows) {
+        throw new Error("Sheet me koi data nahi mila.");
+      }
+
+      const colLabels = data.table.cols.map((c, i) => c.label || c.id || `Col ${i + 1}`);
+      colLabels.forEach(label => {
+        const th = document.createElement('th');
+        th.textContent = label;
+        headRow.appendChild(th);
+      });
+
+      data.table.rows.forEach(row => {
+        const tr = document.createElement('tr');
+        let dateText = '';
+
+        row.c.forEach((cell, i) => {
+          const td = document.createElement('td');
+          const rawValue = cell && cell.f !== undefined ? cell.f : (cell && cell.v !== undefined ? cell.v : '');
+          const isPhoto = isPhotoColumn(colLabels[i]);
+          if (isPhoto) td.classList.add('photo-cell');
+
+          td.appendChild(makeCellContent(rawValue, isPhoto));
+          tr.appendChild(td);
+
+          if (i === 0) dateText = (rawValue || '').toString(); // Column A = date
+        });
+
+        allRowsData.push({ tr, dateText });
+      });
+
+      renderTable(allRowsData);
+    })
+    .catch(err => {
+      statusEl.innerHTML = `<div class="error">
+        Data load nahi ho paaya: ${err.message}<br>
+        Check karein ki sheet "Anyone with the link → Viewer" par share hai ya nahi
+        (File → Share → General access → Anyone with the link).
+      </div>`;
+      console.error(err);
+    });
+</script>
+
+</body>
+</html>
